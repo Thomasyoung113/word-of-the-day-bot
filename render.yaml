@@ -13,3 +13,9 @@ services:
         value: https://router.bynara.id/v1
       - key: BYNARA_MODEL
         value: mistral-medium-3-5
+      - key: STATE_DIR
+        value: /var/data
+    disk:
+      name: wotd-state
+      mountPath: /var/data
+      sizeGB: 1

@@ -18,15 +18,38 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_KEY = os.getenv("BYNARA_API_KEY")
 BASE_URL = os.getenv("BYNARA_BASE_URL", "https://router.bynara.id/v1")
-MODEL = os.getenv("BYNARA_MODEL", "mimo-v2.5-free")
+MODEL = os.getenv("BYNARA_MODEL", "mistral-medium-3-5")
 
 # Allowlist — comma-separated chat IDs, empty = open to all
-ALLOWED_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
-ALLOWED_CHAT_IDS = {int(x) for x in ALLOWED_IDS_RAW.split(",") if x.strip().isdigit()}
+# Group/supergroup chat IDs are negative, so we can't use str.isdigit() here.
+def _parse_allowed_ids(raw: str) -> set[int]:
+    ids = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.add(int(part))
+        except ValueError:
+            logger.warning("Ignoring invalid ALLOWED_CHAT_IDS entry: %r", part)
+    return ids
 
-STATE_FILE = Path(__file__).parent / "state.json"
+
+ALLOWED_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
+ALLOWED_CHAT_IDS = _parse_allowed_ids(ALLOWED_IDS_RAW)
+
+# STATE_DIR should point at a mounted persistent disk in production (see
+# render.yaml) — Render's default filesystem is ephemeral and is wiped on
+# every deploy/restart, which would otherwise silently drop all subscribers
+# and reset the used-words history.
+STATE_DIR = Path(os.getenv("STATE_DIR", str(Path(__file__).parent)))
+STATE_FILE = STATE_DIR / "state.json"
 STATE_LOCK = threading.Lock()
 TZ = zoneinfo.ZoneInfo("Africa/Lagos")
+
+# Cap on how many used words we remember, to keep the prompt sent to the LLM
+# from growing without bound.
+MAX_USED_WORDS = 500
 
 # Rate limiter: cooldown per chat (seconds)
 WORD_COOLDOWN = 10
@@ -69,24 +92,64 @@ def _authorized(chat_id: int) -> bool:
     return not ALLOWED_CHAT_IDS or chat_id in ALLOWED_CHAT_IDS
 
 
-def load_state() -> dict:
+# The word/definition/etymology/examples/fun_fact fields come from the LLM
+# and are dropped into a parse_mode="Markdown" message. If the model ever
+# emits an unescaped *, _, [, or `, Telegram's legacy Markdown parser raises
+# and the whole send silently fails. Escape those characters in any
+# LLM-generated text before it's interpolated into our hand-written
+# Markdown template.
+_MD_SPECIAL_CHARS = ("*", "_", "[", "`")
+
+
+def _escape_md(text: str) -> str:
+    for ch in _MD_SPECIAL_CHARS:
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def _read_state_unlocked() -> dict:
     defaults = {"used_words": [], "chat_ids": []}
     if not STATE_FILE.exists():
         return defaults
     try:
-        with STATE_LOCK:
-            with open(STATE_FILE) as f:
-                data = json.load(f)
+        with open(STATE_FILE) as f:
+            data = json.load(f)
         return defaults | data
     except (json.JSONDecodeError, OSError):
         logger.warning("state.json corrupted, resetting")
         return defaults
 
 
+def _write_state_unlocked(state: dict) -> None:
+    if len(state.get("used_words", [])) > MAX_USED_WORDS:
+        state["used_words"] = state["used_words"][-MAX_USED_WORDS:]
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def load_state() -> dict:
+    with STATE_LOCK:
+        return _read_state_unlocked()
+
+
 def save_state(state: dict) -> None:
     with STATE_LOCK:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, indent=2)
+        _write_state_unlocked(state)
+
+
+def update_state(mutate) -> dict:
+    """Atomically read, mutate, and persist state under a single lock.
+
+    `mutate` is called with the current state dict and should modify it
+    in place (or return a replacement dict).
+    """
+    with STATE_LOCK:
+        state = _read_state_unlocked()
+        result = mutate(state)
+        state = result if result is not None else state
+        _write_state_unlocked(state)
+        return state
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -96,11 +159,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⛔ You are not authorized to use this bot.")
         return
 
-    state = load_state()
-    if chat_id not in state["chat_ids"]:
-        state["chat_ids"].append(chat_id)
-        save_state(state)
-        logger.info("Registered chat: %s", chat_id)
+    def _register(state: dict) -> None:
+        if chat_id not in state["chat_ids"]:
+            state["chat_ids"].append(chat_id)
+            logger.info("Registered chat: %s", chat_id)
+
+    update_state(_register)
 
     await update.message.reply_text(
         "🌅 *Word of the Day Bot*\n\n"
@@ -115,10 +179,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_message.chat_id
-    state = load_state()
-    if chat_id in state["chat_ids"]:
-        state["chat_ids"].remove(chat_id)
-        save_state(state)
+    was_subscribed = False
+
+    def _unregister(state: dict) -> None:
+        nonlocal was_subscribed
+        if chat_id in state["chat_ids"]:
+            state["chat_ids"].remove(chat_id)
+            was_subscribed = True
+
+    update_state(_unregister)
+
+    if was_subscribed:
         logger.info("Unregistered chat: %s", chat_id)
         await update.message.reply_text("✅ Unsubscribed from daily words. Use /start to re-subscribe.")
     else:
@@ -141,10 +212,11 @@ async def word_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     _last_word_time[chat_id] = now
 
-    state = load_state()
-    if chat_id not in state["chat_ids"]:
-        state["chat_ids"].append(chat_id)
-        save_state(state)
+    def _register(state: dict) -> None:
+        if chat_id not in state["chat_ids"]:
+            state["chat_ids"].append(chat_id)
+
+    update_state(_register)
 
     msg = await update.message.reply_text("🔍 Digging up an obscure word...")
     await _send_word(chat_id, context)
@@ -178,29 +250,31 @@ async def _send_word(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     examples = word_data.get("examples", [])
     fun_fact = word_data.get("fun_fact", "")
 
-    state["used_words"].append(word.lower())
-    save_state(state)
+    def _record_word(state: dict) -> None:
+        state["used_words"].append(word.lower())
+
+    update_state(_record_word)
 
     lines = [
         f"*WORD OF THE DAY*",
         f"{datetime.now(TZ).strftime('%B %d, %Y')}",
         "",
-        f"📝 *Word:* {word}",
+        f"📝 *Word:* {_escape_md(word)}",
     ]
     if pronunciation:
-        lines.append(f"🔊 _{pronunciation}_")
+        lines.append(f"🔊 _{_escape_md(pronunciation)}_")
     if pos:
-        lines.append(f"🏷️  {pos}")
+        lines.append(f"🏷️  {_escape_md(pos)}")
     if definition:
-        lines.append(f"\n*Definition:*\n{definition}")
+        lines.append(f"\n*Definition:*\n{_escape_md(definition)}")
     if etymology:
-        lines.append(f"\n*Etymology:*\n{etymology}")
+        lines.append(f"\n*Etymology:*\n{_escape_md(etymology)}")
     if examples:
         lines.append("\n*Examples:*")
         for i, ex in enumerate(examples[:3], 1):
-            lines.append(f"{i}. {ex}")
+            lines.append(f"{i}. {_escape_md(ex)}")
     if fun_fact:
-        lines.append(f"\n💡 {fun_fact}")
+        lines.append(f"\n💡 {_escape_md(fun_fact)}")
 
     text = "\n".join(lines)
 
