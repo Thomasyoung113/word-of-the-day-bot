@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: word-of-the-day-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: BYNARA_API_KEY
+        sync: false
+      - key: BYNARA_BASE_URL
+        value: https://router.bynara.id/v1
+      - key: BYNARA_MODEL
+        value: mistral-medium-3-5
