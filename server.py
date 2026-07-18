@@ -1,39 +1,38 @@
-"""WSGI entry point for Render.
-Runs the bot polling loop in a daemon thread while gunicorn serves
-a health-check endpoint to keep the web service alive.
+"""Standalone entry point — bot polling in main thread + health check HTTP server.
+No gunicorn needed.
 """
+import http.server
 import logging
+import os
 import threading
-import time
 
 from main import main as run_bot
 
+PORT = int(os.getenv("PORT", "10000"))
 logger = logging.getLogger(__name__)
 
 
-def _run_bot_forever() -> None:
-    """Run the bot with auto-restart on crash."""
-    while True:
-        try:
-            run_bot()
-        except Exception as e:
-            logger.exception("Bot polling crashed: %s — restarting in 5s", e)
-            time.sleep(5)
+class _HealthHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass
 
 
-# Start the bot in background with auto-restart
-bot_thread = threading.Thread(target=_run_bot_forever, daemon=True)
-bot_thread.start()
+def _run_http() -> None:
+    server = http.server.HTTPServer(("0.0.0.0", PORT), _HealthHandler)
+    logger.info("Health check server listening on 0.0.0.0:%s", PORT)
+    server.serve_forever()
 
 
-def app(environ, start_response):
-    path = environ.get("PATH_INFO", "/")
-    if path == "/healthz":
-        status = "200 OK"
-        body = b"OK"
-    else:
-        status = "200 OK"
-        body = b"Word of the Day bot is running."
-    headers = [("Content-Type", "text/plain")]
-    start_response(status, headers)
-    return [body]
+# Start HTTP health check in a background daemon thread
+http_thread = threading.Thread(target=_run_http, daemon=True)
+http_thread.start()
+
+logger.info("Starting bot polling...")
+# Run bot polling in the main thread (blocking call)
+run_bot()

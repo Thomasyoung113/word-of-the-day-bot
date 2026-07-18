@@ -3,8 +3,7 @@ services:
     name: word-of-the-day-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app
-    healthCheckPath: /healthz
+    startCommand: python server.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
