@@ -56,11 +56,13 @@ logger.info("BYNARA_API_KEY=%s", _redact(API_KEY))
 logger.info("Model=%s, Allowlist=%s", MODEL, ALLOWED_IDS_RAW if ALLOWED_IDS_RAW else "open")
 
 if not API_KEY:
-    raise ValueError("BYNARA_API_KEY not set in .env")
+    logger.error("BYNARA_API_KEY is not set — /word will fail")
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
+    logger.error("TELEGRAM_BOT_TOKEN is not set — bot cannot start")
 
-word_provider = WordProvider(API_KEY, BASE_URL, MODEL)
+word_provider: WordProvider | None = None
+if API_KEY:
+    word_provider = WordProvider(API_KEY, BASE_URL, MODEL)
 
 
 def _authorized(chat_id: int) -> bool:
@@ -150,6 +152,13 @@ async def word_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _send_word(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if word_provider is None:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ Word generation is not configured (BYNARA_API_KEY missing).",
+        )
+        return
+
     state = load_state()
     used = state["used_words"]
 
@@ -220,6 +229,10 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    if not TOKEN:
+        logger.critical("TELEGRAM_BOT_TOKEN is not set — cannot start polling")
+        return
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
