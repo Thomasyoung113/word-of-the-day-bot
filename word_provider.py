@@ -14,11 +14,20 @@ def _build_prompt(used_words: list[str]) -> str:
 CRITICAL RULES:
 - The word MUST be a REAL English word found in reputable dictionaries
 - It should be INTERESTING — not boring basic vocabulary like "cat", "run", "happy"
-- But NOT extremely obscure either — a well-read person might have seen it before
-- Think: words that make you go "oh that's a cool word" — sophisticated but usable
+- It should NOT be extremely obscure/archaic either — a well-read person should recognize
+  or quickly grasp it, even if they don't use it daily
+- Draw from a WIDE RANGE of subject areas over time — don't default to one lane.
+  Rotate across domains such as: relationships/love, health & medicine, science
+  (geology, biology, astronomy, chemistry, physics), technology, history, law,
+  business/economics, art & music, food & cooking, nature & the outdoors,
+  psychology, politics/society, sports, and everyday emotions/social life.
+  A "word of the day" from geology (e.g. a rock formation term) is just as valid
+  as one about love, tech, or history — vary it, don't only reach for
+  dictionary-trivia or etymology-nerd words.
 - ABSOLUTELY DO NOT use any of these already-used words:
 {used_list}
-- Aim for words with interesting etymology, history, or usage quirks
+- Aim for words with interesting etymology, history, or usage quirks — but the
+  word itself should feel USEFUL and RELEVANT to modern life, not just clever
 
 For the word, provide:
 1. The word itself (the headword)

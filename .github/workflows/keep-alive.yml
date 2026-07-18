@@ -2,8 +2,9 @@ name: Keep Render bot awake
 
 on:
   schedule:
+    # Every 10 minutes — comfortably under Render's 15-minute spin-down window.
     - cron: "*/10 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch: {} # lets you trigger it manually from the Actions tab too
 
 jobs:
   ping:

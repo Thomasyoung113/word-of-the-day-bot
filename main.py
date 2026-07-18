@@ -168,7 +168,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         "🌅 *Word of the Day Bot*\n\n"
-        "I'll send you an obscure English word every day at *8 AM Nigeria time*.\n\n"
+        "I'll send you an interesting English word every day at *8 AM Nigeria time*.\n\n"
         "Commands:\n"
         "/word — get today's word immediately\n"
         "/stop — unsubscribe from daily words\n"
@@ -218,7 +218,7 @@ async def word_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     update_state(_register)
 
-    msg = await update.message.reply_text("🔍 Digging up an obscure word...")
+    msg = await update.message.reply_text("🔍 Digging up today's word...")
     await _send_word(chat_id, context)
     await msg.delete()
 
